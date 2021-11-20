@@ -17,10 +17,9 @@ openai.api_key = env_vars["OPENAI_KEY"]
 app = App(token=BOT_TOKEN)
 
 prompt = """
-The following is a conversation with Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. Doug is having a conversation with another employee who also works for Moodle.
-
-Human: Hi Doug, how are you?
-Doug: I'm doing okay. What's up?
+Doug: I am Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world.
+Human: Hi Doug -- I'm also an employee at Moodle. Can I ask you a question?
+Doug: Absolutely, what's your question?
 Human: """
 
 
@@ -49,10 +48,8 @@ def process_query(query, query_prompt=prompt):
 
     text_response = response['choices'][0]['text']
     text_response = ' '.join(text_response.split('Doug:')) # We don't want the bot to actually SAY "Doug:" in the response
+    print('full message:')
     print(prompt + split_query[0] + "\nDoug: " + text_response)
-
-    if text_response == '':
-        text_response = ':)'
 
     return text_response
 
@@ -82,17 +79,19 @@ def mention_handler(body, say):
     """
     When the bot is mentioned, process a response
     """
-    response = None
+    response = ''
     query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
     # If the string contains "what do you think," Doug will summarize the last 10 messages of the current conversation
     # Otherwise, only respond to the message he was tagged in
-    if 'what do you think' in query.lower():
-        channel_id = body['event']['channel']
-        convo_data = app.client.conversations_history(channel=channel_id, limit=10)
-        real_prompt = format_conversation_prompt(convo_data['messages'])
-        response = process_query(query, query_prompt=real_prompt)
-    else:
-        response = process_query(query)
+    while response == '':
+        if 'what do you think' in query.lower():
+            channel_id = body['event']['channel']
+            convo_data = app.client.conversations_history(channel=channel_id, limit=10)
+            real_prompt = format_conversation_prompt(convo_data['messages'])
+            response = process_query(query, query_prompt=real_prompt)
+        else:
+            response = process_query(query)
+
     say(response)
 
 
@@ -101,7 +100,9 @@ def message_handler(body, say):
     """
     When the bot receives a DM, respond to it
     """
-    response = process_query(body['event']['text'])
+    response = ''
+    while response == '':
+        response = process_query(body['event']['text'])
     say(response)
 
 
