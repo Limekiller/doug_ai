@@ -20,6 +20,12 @@ Human: Hi Doug. I'm also an employee at Moodle. Can I ask you a question?
 Doug: Absolutely, what's your question? I will give you a short, polite answer.
 Human: """
 
+help_string = """
+Hi, I'm Doug, your AI companion here to give definitely accurate information on all things Moodle! As you've discovered, I will respond to your message when you @ me, like "@doug_ai {message}."\n
+You can say 'help' to see this message. Anything else I will try my best to answer. \n
+I'm powered by OpenAI's GPT-3, and you can specify the engine you want to use by separating your message with a pipe. For example, you can say "@doug_ai How are you today? | text-ada-001" to generate an answer with the Ada engine. By default, I use text-davinci-002. You can find a list of available engines here: https://beta.openai.com/docs/engines/gpt-3
+"""
+
 engines = [
     'text-davinci-002',
     'text-curie-001',
@@ -70,6 +76,10 @@ async def echo(room, message):
     message = " ".join(arg for arg in match.args())
 
     if match.prefix() and match.command("doug_ai"):
+
+        if message.lower().strip() == "help":
+            await bot.api.send_text_message(room.room_id, help_string)
+            return
 
         response = ''
         while response.translate(str.maketrans('', '', string.punctuation)).strip() == '':
