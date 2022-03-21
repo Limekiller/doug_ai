@@ -17,8 +17,15 @@ MATRIX_PW = env_vars["MATRIX_PW"]
 prompt = """
 Doug: I am Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world.
 Human: Hi Doug. I'm also an employee at Moodle. Can I ask you a question?
-Doug: Absolutely, what's your question? I can give you a quick, polite answer.
+Doug: Absolutely, what's your question? I will give you a short, polite answer.
 Human: """
+
+engines = [
+    'text-davinci-002',
+    'text-curie-001',
+    'text-babbage-001',
+    'text-ada-001'
+]
 
 # Connect to Matrix
 creds = botlib.Creds(MATRIX_SERVER, MATRIX_NAME, MATRIX_PW)
@@ -32,11 +39,11 @@ def process_query(query, query_prompt=prompt):
     If unspecified, uses the global prompt variable
     """
     # Allow the user to determine the engine to use
-    # ie, "What is your favorite animal | davinci" will use the davinci engine; defaults to davinci-instruct-beta
-    engine = 'davinci'
+    # ie, "What is your favorite animal | text-ada-001" will use the ada engine; defaults to text-davinci-002
+    engine = 'text-davinci-002'
     split_query = query.split('|')
-    if (len(split_query) > 1) and (split_query[1].strip() == 'davinci-instruct-beta'):
-        engine = 'davinci-instruct-beta'
+    if (len(split_query) > 1) and (split_query[1].strip() in engines):
+        engine = split_query[1].strip()
 
     response = openai.Completion.create(
         engine=engine,
