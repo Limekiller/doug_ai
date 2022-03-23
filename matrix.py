@@ -1,6 +1,9 @@
 import openai
 import string
+import requests
+import re
 import simplematrixbotlib as botlib
+from nio import Api as nio_api
 
 # Read vars from .env
 env_vars = {}
@@ -13,17 +16,17 @@ openai.api_key = env_vars["OPENAI_KEY"]
 MATRIX_SERVER = env_vars["MATRIX_SERVER"]
 MATRIX_NAME = env_vars["MATRIX_NAME"]
 MATRIX_PW = env_vars["MATRIX_PW"]
+MATRIX_TOKEN = env_vars["MATRIX_TOKEN"]
 
-prompt = """
-Doug: I am Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world.
+original_prompt = """Doug: I am Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world.
 Human: Hi Doug. I'm also an employee at Moodle. Can I ask you a question?
-Doug: Absolutely, what's your question? I will give you a short, polite answer.
-Human: """
+Doug: Absolutely, what's your question? I will give you a short, polite answer."""
 
 help_string = """
 Hi, I'm Doug, your AI companion here to give definitely accurate information on all things Moodle! As you've discovered, I will respond to your message when you @ me, like "@doug_ai {message}."\n
 You can say 'help' to see this message. Anything else I will try my best to answer. \n
-I'm powered by OpenAI's GPT-3, and you can specify the engine you want to use by separating your message with a pipe. For example, you can say "@doug_ai How are you today? | text-ada-001" to generate an answer with the Ada engine. By default, I use text-davinci-002. You can find a list of available engines here: https://beta.openai.com/docs/engines/gpt-3
+I'm powered by OpenAI's GPT-3, and you can specify the engine you want to use by separating your message with a pipe. For example, you can say "@doug_ai How are you today? | text-ada-001" to generate an answer with the Ada engine. By default, I use text-davinci-002. You can find a list of available engines here: https://beta.openai.com/docs/engines/gpt-3\n
+By default, I only respond to the message I am tagged in. However, if the phrase "what do you think" occurs anywhere in your message, or the first character of your message is an asterisk (*), I will consider the last 6 messages in the chat before I respond.
 """
 
 engines = [
@@ -39,7 +42,7 @@ bot = botlib.Bot(creds)
 PREFIX = '@'
 
 
-def process_query(query, query_prompt=prompt):
+def process_query(query, prompt):
     """
     Takes a query string (usually a question) and optionally a prompt string, passes it to OpenAI, and returns a response
     If unspecified, uses the global prompt variable
@@ -53,7 +56,7 @@ def process_query(query, query_prompt=prompt):
 
     response = openai.Completion.create(
         engine=engine,
-        prompt=query_prompt + split_query[0] + '\nDoug: ',
+        prompt=prompt + '\nHuman: ' + split_query[0] + '\nDoug: ',
         temperature=0.9,
         max_tokens=75,
         top_p=1,
@@ -65,25 +68,39 @@ def process_query(query, query_prompt=prompt):
     text_response = response['choices'][0]['text']
     text_response = ' '.join(text_response.split('Doug:')) # We don't want the bot to actually SAY "Doug:" in the response
     print('full message:')
-    print(prompt + split_query[0] + "\nDoug: " + text_response)
+    print(prompt + '\nHuman: ' + split_query[0] + "\nDoug: " + text_response.lstrip())
 
-    return text_response
+    return text_response.lstrip()
+
+
+def process_history(room, event):
+    api_params = nio_api.room_context(MATRIX_TOKEN, room.room_id, event.event_id)
+    response = requests.get(MATRIX_SERVER + api_params[1]).json()
+    prompt = original_prompt
+    for event in reversed(response['events_before']):
+        username = re.split('[^a-zA-Z]', event['sender'][1:])[0]
+        prompt += '\n' + username + ': ' + event['content']['body']
+    return prompt
 
 
 @bot.listener.on_message_event
 async def echo(room, message):
     match = botlib.MessageMatch(room, message, bot, PREFIX)
-    message = " ".join(arg for arg in match.args())
+    message_text = " ".join(arg for arg in match.args())
 
     if match.prefix() and match.command("doug_ai"):
 
-        if message.lower().strip() == "help":
+        if message_text.lower().strip() == "help":
             await bot.api.send_text_message(room.room_id, help_string)
             return
 
+        prompt = original_prompt
+        if 'what do you think' in message_text.lower() or message_text[0] == '*':
+            prompt = process_history(room, message)
+
         response = ''
         while response.translate(str.maketrans('', '', string.punctuation)).strip() == '':
-            response = process_query(message)
+            response = process_query(message_text, prompt)
 
         await bot.api.send_text_message(room.room_id, response)
 
