@@ -38,7 +38,7 @@ engines = [
 # Connect to Matrix
 creds = botlib.Creds(MATRIX_SERVER, MATRIX_NAME, MATRIX_PW)
 bot = botlib.Bot(creds)
-PREFIX = '@'
+PREFIX = 'DougBot'
 
 # Get access token
 token_request = {
@@ -68,7 +68,7 @@ def process_query(query, prompt):
         engine=engine,
         prompt=prompt + '\nHuman: ' + split_query[0] + '\nDoug: ',
         temperature=0.9,
-        max_tokens=75,
+        max_tokens=500,
         top_p=1,
         frequency_penalty=1.0,
         presence_penalty=0.6,
@@ -104,7 +104,7 @@ async def echo(room, message):
     match = botlib.MessageMatch(room, message, bot, PREFIX)
     message_text = " ".join(arg for arg in match.args())
 
-    if match.prefix() and match.command("doug_bot"):
+    if match.prefix() and match.command(":"):
 
         if message_text.lower().strip() == "help":
             await bot.api.send_text_message(room.room_id, help_string)
