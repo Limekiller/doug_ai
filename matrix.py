@@ -2,6 +2,7 @@ import string
 import requests
 import re
 import random
+import time
 
 import openai
 import simplematrixbotlib as botlib
@@ -18,6 +19,23 @@ openai.api_key = env_vars["OPENAI_KEY"]
 MATRIX_SERVER = env_vars["MATRIX_SERVER"]
 MATRIX_NAME = env_vars["MATRIX_NAME"]
 MATRIX_PW = env_vars["MATRIX_PW"]
+
+# Connect to Matrix
+creds = botlib.Creds(MATRIX_SERVER, MATRIX_NAME, MATRIX_PW)
+bot = botlib.Bot(creds)
+PREFIX = 'DougBot:'
+
+# Get access token
+token_request = {
+    "type": "m.login.password",
+    "identifier": {
+        "type": "m.id.user",
+        "user": MATRIX_NAME
+    },
+    "password": MATRIX_PW
+}
+response = requests.post(MATRIX_SERVER + '/_matrix/client/v3/login', json=token_request).json()
+MATRIX_TOKEN = response['access_token']
 
 default_prompt = """Doug: I am Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world.
 Human: Hi Doug. I'm also an employee at Moodle. Can I ask you a question?
@@ -37,25 +55,31 @@ engines = [
     'text-ada-001'
 ]
 
-# Connect to Matrix
-creds = botlib.Creds(MATRIX_SERVER, MATRIX_NAME, MATRIX_PW)
-bot = botlib.Bot(creds)
-PREFIX = 'test-doug'
-
-# Get access token
-token_request = {
-    "type": "m.login.password",
-    "identifier": {
-        "type": "m.id.user",
-        "user": MATRIX_NAME
-    },
-    "password": MATRIX_PW
-}
-response = requests.post(MATRIX_SERVER + '/_matrix/client/v3/login', json=token_request).json()
-MATRIX_TOKEN = response['access_token']
-
 # Doug keeps a rotating queue of the last 20 messages sent in each room, randomly chiming in with context
 message_dict = {}
+one_on_one_convo_dict = {}
+
+
+def get_author_and_body_from_message(message):
+    """
+    Given a message object, return the user who sent it like "@username" and the content of the message, as strings
+
+    Paremeters:
+    message (nio.events.room_events.RoomMessageText): The message object corresponding to the message sent
+
+    Return:
+    string: The user who sent the message
+    string: The content of the message
+    """
+    message_text = str(message)
+    author = message_text.split(': ')[0].split(':')[0]
+    body = message_text.split(': ', 1)[1]
+
+    # Remove the "DougBot:" part of the message, if it exists
+    if (MATRIX_NAME + ':').lower() in body.lower():
+        body = body.split(':', 1)[1]
+
+    return author, body
 
 
 def process_message_queue(room, message):
@@ -66,9 +90,7 @@ def process_message_queue(room, message):
     room (nio.rooms.MatrixRoom): The room object corresponding to the room the message was sent in
     message (nio.events.room_events.RoomMessageText): The message object corresponding to the message sent
     """
-    message_text = str(message)
-    author = message_text.split(': ')[0].split(':')[0]
-    body = message_text.split(': ')[1]
+    author, body = get_author_and_body_from_message(message)
 
     if room.room_id in message_dict:
         message_dict[room.room_id].append({'author': author, 'body': body})
@@ -78,6 +100,31 @@ def process_message_queue(room, message):
             message_dict[room.room_id] = message_dict[room.room_id][len(message_dict[room.room_id])-20:]
     else:
         message_dict[room.room_id] = [{'author': author, 'body': body}]
+
+
+def process_one_on_one_convo(room, message):
+    """
+    Given a room object and message object, add the message in proper format to the message history for that specific user in said room
+    This way, Doug can carry multiple conversations with people mentioning him
+
+    Parameters:
+    room (nio.rooms.MatrixRoom): The room object corresponding to the room the message was sent in
+    message (nio.events.room_events.RoomMessageText): The message object corresponding to the message sent
+    """
+    author, body = get_author_and_body_from_message(message)
+
+    if room.room_id in one_on_one_convo_dict:
+        if author in one_on_one_convo_dict[room.room_id]:
+            # one-on-one context is cleared after 5 minutes
+            if time.time() - one_on_one_convo_dict[room.room_id][author]['last_accessed'] > 300:
+                one_on_one_convo_dict[room.room_id][author]['message_list'] = []
+
+            one_on_one_convo_dict[room.room_id][author]['message_list'].append({'author': author, 'body': body})
+            one_on_one_convo_dict[room.room_id][author]['last_accessed'] = time.time()
+        else:
+            one_on_one_convo_dict[room.room_id][author] = {'message_list': [{'author': author, 'body': body}], 'last_accessed': time.time()}
+    else:
+        one_on_one_convo_dict[room.room_id] = {author: {'message_list': [{'author': author, 'body': body}], 'last_accessed': time.time()}}
 
 
 def process_query(query, prompt):
@@ -155,41 +202,46 @@ def process_history(room=None, event=None, message_list=None, prompt=None):
 @bot.listener.on_message_event
 async def echo(room, message):
     match = botlib.MessageMatch(room, message, bot, PREFIX)
-    message_text = " ".join(arg for arg in match.args())
 
     prompt = default_prompt
-    process_message_queue(room, message)
-    print(message_dict)
+    author, body = get_author_and_body_from_message(message)
 
-    # If someone is talking directly to Doug, only respond to their message
+    process_message_queue(room, message)
+
     if match.prefix():
-        if message_text.lower().strip() == "help":
+        if body.lower().strip() == "help":
             await bot.api.send_text_message(room.room_id, help_string)
             return
 
-        # Well, unless they request context with a trigger phrase
-        if 'what do you think' in message_text.lower() or message_text[0] == '*':
+        if 'what do you think' in body.lower() or body[0] == '*':
             prompt = process_history(room=room, event=message)
+        else:
+            process_one_on_one_convo(room, message)
+            prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. Below is a transcript from a conversation that he is having with another employee:\n"""
+            prompt = process_history(message_list=one_on_one_convo_dict[room.room_id][author]['message_list'], prompt=prompt)
 
         # Sometimes OpenAI just outputs garbage, like a string only including whitespace and punctuation 
         # This loop keeps asking for completions until we get something more sane
         # (although this may only apply to Slack and not Matrix for reasons I don't feel like writing here)
         response = ''
         while response.translate(str.maketrans('', '', string.punctuation)).strip() == '':
-            response = process_query(message_text, prompt)
+            response = process_query(body, prompt)
+
+        if room.room_id in one_on_one_convo_dict and author in one_on_one_convo_dict[room.room_id]:
+            one_on_one_convo_dict[room.room_id][author]['message_list'].append({'author': 'Doug', 'body': response})
 
         await bot.api.send_text_message(room.room_id, response)
 
     else:
-        # If a message has come in not directed at Doug, give a 20% chance of chiming into the conversation
+        # If a message has come in not directed at Doug (and not from Doug himself), give a 20% chance of chiming into the conversation
         # Context provided by the message_dict var goes back 20 messages
-        if random.uniform(0, 10) <= 2 and 'dougbot' not in message_dict.lower():
+        if random.uniform(0, 1000) <= 333 and author != '@' + MATRIX_NAME:
             prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. Below is a transcript from a conversation that he is a part of:\n"""
             prompt = process_history(message_list=message_dict[room.room_id], prompt=prompt)
 
             response = ''
             while response.translate(str.maketrans('', '', string.punctuation)).strip() == '':
-                response = process_query(message_text, prompt)
+                response = process_query(body, prompt)
 
             await bot.api.send_text_message(room.room_id, response)
 
