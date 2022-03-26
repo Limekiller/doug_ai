@@ -233,7 +233,7 @@ async def echo(room, message):
         await bot.api.send_text_message(room.room_id, response)
 
     else:
-        # If a message has come in not directed at Doug (and not from Doug himself), give a 20% chance of chiming into the conversation
+        # If a message has come in not directed at Doug (and not from Doug himself), give a 1/3 chance of chiming into the conversation
         # Context provided by the message_dict var goes back 20 messages
         if random.uniform(0, 1000) <= 333 and author != '@' + MATRIX_NAME:
             prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. Below is a transcript from a conversation that he is a part of:\n"""
