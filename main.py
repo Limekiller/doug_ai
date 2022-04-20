@@ -64,6 +64,27 @@ def process_query(query, prompt=prompt):
     return text_response.strip()
 
 
+def format_thread_prompt(channel_id, thread_id):
+    new_prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The following is a transcript from a conversation he is having with multiple employees:\n"""
+    thread_messages = app.client.conversations_replies(
+        channel=channel_id,
+        ts=thread_id
+    )
+
+    thread_messages['messages'].pop()
+    for message in thread_messages['messages']:
+        text = message['text']
+        if message['text'][0] == '<':
+            try:
+                text = message['text'].split('> ')[1]
+            except:
+                pass
+        new_prompt += 'Employee: ' + text + "\n"
+    new_prompt += "Employee: "
+
+    return new_prompt
+
+
 def format_message_history_prompt(user, channel=None):
     new_prompt = prompt
     message_list = []
@@ -117,15 +138,15 @@ def mention_handler(body, say):
     """
     When the bot is mentioned, process a response
     """
-    response = ''
+    ai_prompt = prompt
     query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
     channel_id = body['event']['channel']
 
-    ai_prompt = format_message_history_prompt(body['event']['user'], channel_id)
-    response = process_query(query, ai_prompt)
-
     # If the message is part of a thread, respond in that thread
     if 'thread_ts' in body['event']:
+        ai_prompt = format_thread_prompt(channel_id, body['event']['thread_ts'])
+
+        response = process_query(query, ai_prompt)
         app.client.chat_postMessage(
             channel = channel_id,
             thread_ts = body['event']['thread_ts'],
@@ -133,6 +154,9 @@ def mention_handler(body, say):
         )
 
     else:
+        ai_prompt = format_message_history_prompt(body['event']['user'], channel_id)
+        response = process_query(query, ai_prompt)
+
         record_conversation(body['event']['user'], query, channel_id)
         conversation_dict['channels'][channel_id]['messages'].append({'user': 'Doug', 'body': response})
         print(conversation_dict)
