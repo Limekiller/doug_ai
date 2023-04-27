@@ -52,7 +52,7 @@ def process_query(query, prompt=prompt):
     """
     # Allow the user to determine the engine to use
     # ie, "What is your favorite animal | davinci" will use the davinci engine; defaults to davinci-instruct-beta
-    engine = 'davinci-instruct-beta'
+    engine = 'text-davinci-001'
     split_query = query.split('|')
     if (len(split_query) > 1) and (split_query[1].strip() in engines):
         engine = split_query[1].strip()
@@ -65,7 +65,7 @@ def process_query(query, prompt=prompt):
         top_p=1,
         frequency_penalty=1.0,
         presence_penalty=0.6,
-        stop=["Human:", "Employee", ":"]
+        stop=["\n"]
     )
 
     text_response = response['choices'][0]['text']
@@ -77,7 +77,7 @@ def process_query(query, prompt=prompt):
 
 
 def format_thread_prompt(channel_id, thread_id):
-    new_prompt = """Doug is the creator of Moodle. He's very polite and professional. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The following is a transcript from a conversation Doug is having with multiple employees:\n"""
+    new_prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The rest of this passage is a back-and-forth transcript from a conversation Doug is having with multiple Moodle employees:\n\n"""
     thread_messages = app.client.conversations_replies(
         channel=channel_id,
         ts=thread_id
@@ -105,7 +105,7 @@ def format_message_history_prompt(user, channel=None):
     if channel:
         if channel not in conversation_dict['channels']:
             return new_prompt
-        new_prompt = """Doug is the creator of Moodle. He's very polite and professional. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The following is a transcript from a conversation Doug is having with multiple employees:\n"""
+        new_prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The rest of this passage is a back-and-forth transcript from a conversation Doug is having with multiple Moodle employees:\n\n"""
         message_list = conversation_dict['channels'][channel]['messages']
     else:
         if user not in conversation_dict['DMs']:
@@ -117,7 +117,7 @@ def format_message_history_prompt(user, channel=None):
         if message['user'] != 'Doug':
             user = 'Employee'
         new_prompt += user + ': ' + message['body'] + "\n"
-    new_prompt += "Employee:"
+    new_prompt += "Employee: "
 
     return new_prompt
 
@@ -153,18 +153,38 @@ def message_handler(body, say):
 
 
 def channel_handler(body, say):
-    if random.randint(0, 100) < 20 and body['event']['channel'] in channels_doug_can_chime_in:
-        query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
-        channel_id = body['event']['channel']
+    query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
+    channel_id = body['event']['channel']
+
+    randomChanceCheck = random.randint(0, 100) < 20
+    messageInValidChannel = body['event']['channel'] in channels_doug_can_chime_in
+    messageWasJustSent = time.time() - body['event_time'] < 10
+
+    print('checks')
+    print(randomChanceCheck)
+    print(messageInValidChannel, body['event']['channel'])
+    print(messageWasJustSent)
+    print('----')
+
+    if randomChanceCheck and messageInValidChannel and messageWasJustSent:
+        record_conversation(body['event']['user'], query, channel_id)
 
         ai_prompt = format_message_history_prompt(body['event']['user'], channel_id)
         response = process_query(query, ai_prompt)
 
-        record_conversation(body['event']['user'], query, channel_id)
         conversation_dict['channels'][channel_id]['messages'].append({'user': 'Doug', 'body': response})
         print(conversation_dict)
 
-        say(response)
+        if 'thread_ts' in body['event']:
+            app.client.chat_postMessage(
+                channel = channel_id,
+                thread_ts = body['event']['thread_ts'],
+                text = response
+            )
+        else:
+            say(response)
+    else:
+        record_conversation(body['event']['user'], query, channel_id)
 
 
 @app.event("app_mention")
@@ -172,6 +192,7 @@ def mention_handler(body, say):
     """
     When the bot is mentioned, process a response
     """
+
     ai_prompt = prompt
     query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
     channel_id = body['event']['channel']
@@ -202,6 +223,7 @@ def im_handler(body, say):
     """
     When the bot receives a DM, respond to it
     """
+
     print(body)
     response = ''
     ai_prompt = format_message_history_prompt(body['event']['user'])
