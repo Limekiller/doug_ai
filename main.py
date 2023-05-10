@@ -57,19 +57,21 @@ def process_query(query, prompt=prompt):
     if (len(split_query) > 1) and (split_query[1].strip() in engines):
         engine = split_query[1].strip()
 
-    response = openai.Completion.create(
-        engine=engine,
-        prompt=prompt + split_query[0] + '\nDoug:',
-        temperature=0.9,
-        max_tokens=500,
-        top_p=1,
-        frequency_penalty=1.0,
-        presence_penalty=0.6,
-        stop=["\n"]
-    )
+    text_response = ''
+    while text_response == '':
+        response = openai.Completion.create(
+            engine=engine,
+            prompt=prompt + split_query[0] + '\nDoug:',
+            temperature=0.9,
+            max_tokens=500,
+            top_p=1,
+            frequency_penalty=1.0,
+            presence_penalty=0.6,
+            stop=['Employee:']
+        )
 
-    text_response = response['choices'][0]['text']
-    text_response = ' '.join(text_response.split('Doug:')) # We don't want the bot to actually SAY "Doug:" in the response
+        text_response = response['choices'][0]['text']
+
     print('full message:')
     print(prompt + split_query[0] + "\nDoug: " + text_response.strip())
 
@@ -171,6 +173,7 @@ def channel_handler(body, say):
 
         ai_prompt = format_message_history_prompt(body['event']['user'], channel_id)
         response = process_query(query, ai_prompt)
+        print(response)
 
         conversation_dict['channels'][channel_id]['messages'].append({'user': 'Doug', 'body': response})
         print(conversation_dict)
