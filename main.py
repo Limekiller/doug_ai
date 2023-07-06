@@ -87,13 +87,17 @@ def format_thread_prompt(channel_id, thread_id):
 
     thread_messages['messages'].pop()
     for message in thread_messages['messages']:
+        user = 'Doug'
+        if message['user'] != 'Doug':
+            user = 'Employee'
+
         text = message['text']
         if message['text'][0] == '<':
             try:
                 text = message['text'].split('> ')[1]
             except:
                 pass
-        new_prompt += 'Employee: ' + text + "\n"
+        new_prompt += user + ': ' + text + "\n"
     new_prompt += "Employee: "
 
     return new_prompt
