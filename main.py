@@ -42,7 +42,7 @@ ENGINES = [
 
 CHANNELS_DOUG_CAN_CHIME_IN = [
     'C03C43ZME77',
-    # 'C02EYENFY4R'
+    'C02EYENFY4R'
 ]
 
 COVERSATION_DICT = {'channels': {}, 'DMs': {}}
