@@ -1,9 +1,10 @@
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
-import openai
+from openai import OpenAI
 import string
 import time
 import random
+import re
 
 # Read vars from .env
 env_vars = {}
@@ -15,71 +16,65 @@ with open('.env-test') as f:
 APP_TOKEN = env_vars["APP_TOKEN"]
 BOT_TOKEN = env_vars["BOT_TOKEN"]
 BOT_ID = env_vars["BOT_ID"]
-openai.api_key = env_vars["OPENAI_KEY"]
 
 app = App(token=BOT_TOKEN)
+client = OpenAI(
+    api_key=env_vars["OPENAI_KEY"]
+)
 
-prompt = """
-Doug: I am Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world.
-Human: Hi Doug. I'm also an employee at Moodle. Can I ask you a question?
-Doug: Absolutely, what's your question? I can give you a quick, polite answer.
-Human: """
+PROMPT = """
+You are Doug, the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. 
+You aren't an assistant, you're just always having conversations with your coworkers. You may be talking to multiple people at the same time.
+You try to be friendly, but sometimes let yourself get snarky -- and always bring the conversation back to Moodle!
+"""
 
-engines = [
-    'text-davinci-002',
-    'text-davinci-001',
-    'text-curie-001',
-    'text-babbage-001',
-    'text-ada-001',
-    'davinci-instruct-beta',
-    'davinci',
-    'curie',
-    'babbage',
-    'ada'
+ENGINES = [
+    'gpt-4',
+    'gpt-4-1106-preview',
+    'gpt-4-0613',
+    'gpt-4-0314',
+    'gpt-3.5-turbo',
+    'gpt-3.5-turbo-16k',
+    'gpt-3.5-turbo-1106',
+    'gpt-3.5-turbo-0613',
+    'gpt-3.5-turbo-16k-0613',
 ]
 
-channels_doug_can_chime_in = [
+CHANNELS_DOUG_CAN_CHIME_IN = [
     'C03C43ZME77',
-    'C02EYENFY4R'
+    # 'C02EYENFY4R'
 ]
 
-conversation_dict = {'channels': {}, 'DMs': {}}
+COVERSATION_DICT = {'channels': {}, 'DMs': {}}
 
-def process_query(query, prompt=prompt):
+def get_response(query, message_list=[]):
     """
-    Takes a query string (usually a question) and optionally a prompt string, passes it to OpenAI, and returns a response
-    If unspecified, uses the global prompt variable
+    Takes a query and a list of messages and returns a completion
     """
-    # Allow the user to determine the engine to use
-    # ie, "What is your favorite animal | davinci" will use the davinci engine; defaults to davinci-instruct-beta
-    engine = 'text-davinci-001'
-    split_query = query.split('|')
-    if (len(split_query) > 1) and (split_query[1].strip() in engines):
-        engine = split_query[1].strip()
+    message_list.insert(0, {
+        "role": "system",
+        "content": PROMPT
+    })
 
-    text_response = ''
-    while text_response == '':
-        response = openai.Completion.create(
-            engine=engine,
-            prompt=prompt + split_query[0] + '\nDoug:',
-            temperature=0.9,
-            max_tokens=500,
-            top_p=1,
-            frequency_penalty=1.0,
-            presence_penalty=0.6,
-            stop=['Employee:']
-        )
+    message_list.append({
+        "role": "user",
+        "content": query
+    })
 
-        text_response = response['choices'][0]['text']
+    response = client.chat.completions.create(
+        model="gpt-3.5-turbo",
+        messages=message_list
+    )
 
-    print('full message:')
-    print(prompt + split_query[0] + "\nDoug: " + text_response.strip())
-
-    return text_response.strip()
+    return response.choices[0].message.content
 
 
-def format_thread_prompt(channel_id, thread_id):
-    new_prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The rest of this passage is a back-and-forth transcript from a conversation Doug is having with multiple Moodle employees:\n\n"""
+def get_thread_messages(channel_id, thread_id):
+    """
+    Given a channel and thread ID, get a formatted list of messages from the thread
+    """
+    messages = []
+
     thread_messages = app.client.conversations_replies(
         channel=channel_id,
         ts=thread_id
@@ -87,160 +82,165 @@ def format_thread_prompt(channel_id, thread_id):
 
     thread_messages['messages'].pop()
     for message in thread_messages['messages']:
-        user = 'Doug'
+        role = 'assistant'
         if message['user'] != 'Doug':
-            user = 'Employee'
+            role = 'user'
 
         text = message['text']
-        if message['text'][0] == '<':
-            try:
-                text = message['text'].split('> ')[1]
-            except:
-                pass
-        new_prompt += user + ': ' + text + "\n"
-    new_prompt += "Employee: "
+        content = insert_pretty_names(text)
+        messages.append({'role': role, 'content': content})
 
-    return new_prompt
+    return messages
 
 
-def format_message_history_prompt(user, channel=None):
-    new_prompt = prompt
+def insert_pretty_names(content):
+    """
+    Given a string containing Slack IDs like '.... <@ID> ....', split it up into tokens consisting of either a string or a Slack ID
+    Then replace each ID with the user's real name and return the combined sentence
+    """
+    sentence = []
+    tokens = [token for token in re.split(r'(<[^>]*>)', content) if token]
+    for token in tokens:
+        if token[0] == '<' and token[1] == '@' and token[-1] == '>':
+            user_id = token.split('<@')[1].split('>')[0]
+            user = '@' + app.client.users_profile_get(user=user_id)['profile']['real_name']
+            sentence.append(user)
+        else:
+            sentence.append(token)
+
+    return ''.join(sentence)
+
+
+def get_message_history(user=None, channel=None):
+    """
+    This function takes a user or channel ID, and returns the message history for that user or channel
+    """
     message_list = []
-
     # determine which source to pull the message list from
     if channel:
-        if channel not in conversation_dict['channels']:
-            return new_prompt
-        new_prompt = """Doug is the creator of Moodle. Moodle is an LMS (learning management system), the most popular open-source LMS in the world. The rest of this passage is a back-and-forth transcript from a conversation Doug is having with multiple Moodle employees:\n\n"""
-        message_list = conversation_dict['channels'][channel]['messages']
+        if channel not in COVERSATION_DICT['channels']:
+            return False
+        message_list = COVERSATION_DICT['channels'][channel]['messages']
     else:
-        if user not in conversation_dict['DMs']:
-            return new_prompt
-        message_list = conversation_dict['DMs'][user]['messages']
+        if user not in COVERSATION_DICT['DMs']:
+            return []
+        message_list = COVERSATION_DICT['DMs'][user]['messages']
 
-    for message in message_list:
-        user = 'Doug'
-        if message['user'] != 'Doug':
-            user = 'Employee'
-        new_prompt += user + ': ' + message['body'] + "\n"
-    new_prompt += "Employee: "
-
-    return new_prompt
-
-
-def record_conversation(user, body, channel=None):
+    return message_list
+def record_conversation(user, role, content, channel=None):
+    """
+    This function stores responses in a dictionary for later retrieval
+    """
     if channel:
-        if channel in conversation_dict['channels']:
+        if channel in COVERSATION_DICT['channels']:
             # reset convo if response time is greater than 10 minutes
-            if time.time() - conversation_dict['channels'][channel]['time'] > 600:
-                conversation_dict['channels'][channel]['messages'] = []
+            if time.time() - COVERSATION_DICT['channels'][channel]['time'] > 600:
+                COVERSATION_DICT['channels'][channel]['messages'] = []
 
-            conversation_dict['channels'][channel]['messages'].append({'user': user, 'body': body})
-            conversation_dict['channels'][channel]['time'] = time.time()
+            COVERSATION_DICT['channels'][channel]['messages'].append({'role': role, 'content': content})
+            COVERSATION_DICT['channels'][channel]['time'] = time.time()
         else:
-            conversation_dict['channels'][channel] = {'messages': [{'user': user, 'body': body}], 'time': time.time()}
+            COVERSATION_DICT['channels'][channel] = {'messages': [{'role': role, 'content': content}], 'time': time.time()}
     else:
-        if user in conversation_dict['DMs']:
-            if time.time() - conversation_dict['DMs'][user]['time'] > 600:
-                conversation_dict['DMs'][user]['messages'] = []
+        if user in COVERSATION_DICT['DMs']:
+            if time.time() - COVERSATION_DICT['DMs'][user]['time'] > 600:
+                COVERSATION_DICT['DMs'][user]['messages'] = []
 
-            conversation_dict['DMs'][user]['messages'].append({'user': user, 'body': body})
-            conversation_dict['DMs'][user]['time'] = time.time()
+            COVERSATION_DICT['DMs'][user]['messages'].append({'role': role, 'content': content})
+            COVERSATION_DICT['DMs'][user]['time'] = time.time()
         else:
-            conversation_dict['DMs'][user] = {'messages': [{'user': user, 'body': body}], 'time': time.time()}
-
-
-@app.event("message")
-def message_handler(body, say):
-    if body['event']['channel_type'] == 'im':
-        im_handler(body, say)
-    else:
-        channel_handler(body, say)
+            COVERSATION_DICT['DMs'][user] = {'messages': [{'role': role, 'content': content}], 'time': time.time()}
 
 
 def channel_handler(body, say):
-    query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
+    content = insert_pretty_names(body['event']['text'])
     channel_id = body['event']['channel']
 
+    thread_id = None
+    if 'thread_ts' in body['event']:
+        thread_id = body['event']['thread_ts']
+
     randomChanceCheck = random.randint(0, 100) < 20
-    messageInValidChannel = body['event']['channel'] in channels_doug_can_chime_in
+    messageInValidChannel = body['event']['channel'] in CHANNELS_DOUG_CAN_CHIME_IN
     messageWasJustSent = time.time() - body['event_time'] < 10
 
-    print('checks')
-    print(randomChanceCheck)
-    print(messageInValidChannel, body['event']['channel'])
-    print(messageWasJustSent)
-    print('----')
-
     if randomChanceCheck and messageInValidChannel and messageWasJustSent:
-        record_conversation(body['event']['user'], query, channel_id)
-
-        ai_prompt = format_message_history_prompt(body['event']['user'], channel_id)
-        response = process_query(query, ai_prompt)
-        print(response)
-
-        conversation_dict['channels'][channel_id]['messages'].append({'user': 'Doug', 'body': response})
-        print(conversation_dict)
-
-        if 'thread_ts' in body['event']:
+        # If the message was in a thread, get a list of all thread messages for context
+        # otherwise use our convo dict
+        if thread_id:
+            messages = get_thread_messages(channel_id, thread_id)
+            response = get_response(content, messages)
+        
             app.client.chat_postMessage(
                 channel = channel_id,
-                thread_ts = body['event']['thread_ts'],
+                thread_ts = thread_id,
                 text = response
             )
         else:
+            record_conversation(body['event']['user'], "user", content, channel_id)
+            messages = get_message_history(channel=channel_id)
+            response = get_response(content, messages)
+            record_conversation(body['event']['user'], "assistant", response, channel_id)
             say(response)
     else:
-        record_conversation(body['event']['user'], query, channel_id)
-
-
-@app.event("app_mention")
-def mention_handler(body, say):
-    """
-    When the bot is mentioned, process a response
-    """
-
-    ai_prompt = prompt
-    query = body['event']['text'].replace('<@' + BOT_ID + '>', '')
-    channel_id = body['event']['channel']
-
-    # If the message is part of a thread, respond in that thread
-    if 'thread_ts' in body['event']:
-        ai_prompt = format_thread_prompt(channel_id, body['event']['thread_ts'])
-
-        response = process_query(query, ai_prompt)
-        app.client.chat_postMessage(
-            channel = channel_id,
-            thread_ts = body['event']['thread_ts'],
-            text = response
-        )
-
-    else:
-        ai_prompt = format_message_history_prompt(body['event']['user'], channel_id)
-        response = process_query(query, ai_prompt)
-
-        record_conversation(body['event']['user'], query, channel_id)
-        conversation_dict['channels'][channel_id]['messages'].append({'user': 'Doug', 'body': response})
-        print(conversation_dict)
-
-        say(response)
+        if not thread_id:
+            record_conversation(body['event']['user'], "user", content, channel_id)
+    
+    print(COVERSATION_DICT)
 
 
 def im_handler(body, say):
     """
     When the bot receives a DM, respond to it
     """
+    record_conversation(body['event']['user'], "user", body['event']['text'])
 
-    print(body)
-    response = ''
-    ai_prompt = format_message_history_prompt(body['event']['user'])
-    response = process_query(body['event']['text'], ai_prompt)
+    messages = get_message_history(user=body['event']['user'])
+    response = get_response(body['event']['text'], messages)
+    record_conversation(body['event']['user'], "assistant", response)
 
-    record_conversation(body['event']['user'], body['event']['text'])
-    conversation_dict['DMs'][body['event']['user']]['messages'].append({'user': 'Doug', 'body': response})
-    print(conversation_dict)
-
+    print(COVERSATION_DICT)
     say(response)
+
+
+@app.event("message")
+def message_handler(body, say):
+    """ 
+    Slack listener for *any* message
+    """
+    if body['event']['channel_type'] == 'im':
+        # Handle a DM
+        im_handler(body, say)
+    else:
+        channel_handler(body, say)
+
+
+@app.event("app_mention")
+def mention_handler(body, say):
+    """
+    Slack listener for pings ("@doug_ai")
+    """
+
+    channel_id = body['event']['channel']
+    content = insert_pretty_names(body['event']['text'])
+
+    # If the message is part of a thread, respond in that thread
+    if 'thread_ts' in body['event']:
+        thread_id = body['event']['thread_ts']
+        messages = get_thread_messages(channel_id, thread_id)
+        response = get_response(content, messages)
+        app.client.chat_postMessage(
+            channel = channel_id,
+            thread_ts = thread_id,
+            text = response
+        )
+
+    else:
+        record_conversation(body['event']['user'], "user", content, channel_id)
+        messages = get_message_history(channel=channel_id)
+        response = get_response(content, messages)
+        record_conversation(body['event']['user'], "assistant", response, channel_id)
+        say(response)
 
 
 if __name__ == "__main__":
